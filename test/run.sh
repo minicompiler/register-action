@@ -18,8 +18,10 @@ rc=0
 total=0
 failures=0
 
-# invoked by the trap below, which shellcheck cannot see
-# shellcheck disable=SC2329
+# Invoked by the trap below, which shellcheck cannot see. The two codes are the
+# same complaint from two shellcheck generations: SC2317 (0.9 and older, once
+# per command in the body) and SC2329 (0.10 and newer, once for the function).
+# shellcheck disable=SC2317,SC2329
 cleanup() {
     if [ -n "${STUB:-}" ]; then
         kill "$STUB" 2> /dev/null
