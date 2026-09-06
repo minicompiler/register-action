@@ -67,6 +67,21 @@ hasnt() {
     fi
 }
 
+# The same two, anchored: what matters about a workflow command is not that the
+# text is somewhere in the log but WHERE it is on its line. Actions parses `::`
+# only at column 0.
+hasnt_at_col0() {
+    total=$((total + 1))
+    if grep -q -e "^$2" "$3"; then
+        printf 'FAIL %-34s at column 0: %s\n' "$1" "$2"
+        sed 's/^/     /' "$3"
+        failures=$((failures + 1))
+        rc=1
+    else
+        printf 'ok   %-34s not at column 0: %s\n' "$1" "$2"
+    fi
+}
+
 command -v python3 > /dev/null 2>&1 || { echo "run.sh: SKIPPED (no python3)"; exit 0; }
 command -v curl > /dev/null 2>&1 || { echo "run.sh: SKIPPED (no curl)"; exit 0; }
 
@@ -122,6 +137,16 @@ has "failed-error" "::error::the mc registry refused this release" "$LOG"
 has "failed-report-in-log" "sandbox: refused: open /etc/shadow" "$LOG"
 has "failed-filtered-colour" "colour: ?[31mred?[0m" "$LOG"
 has "failed-state" "state=failed" "$WORK/bad.out"
+# The report is a stranger's text and it is printed into a log GitHub parses.
+# Every line of it goes out behind two spaces, so a `::` the registry sent
+# cannot be a workflow command here -- whatever the registry did with it.
+has "report-gutter-error" "  ::error::pwned" "$LOG"
+has "report-gutter-setoutput" "  ::set-output name=x::y" "$LOG"
+has "report-gutter-stop" "  ::stop-commands::tok" "$LOG"
+hasnt_at_col0 "report-no-command-error" "::error::pwned" "$LOG"
+hasnt_at_col0 "report-no-command-setoutput" "::set-output" "$LOG"
+hasnt_at_col0 "report-no-command-stop" "::stop-commands" "$LOG"
+hasnt_at_col0 "report-no-command-clone" "clone 180 KiB" "$LOG"
 
 # ---- 3: the repository was never registered ----
 run_case missing o/missing v1.2.0

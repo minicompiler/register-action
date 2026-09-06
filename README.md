@@ -21,7 +21,9 @@ It carries **no secret**. The whole request is your repository's public URL.
 4. Reads `<registry>/jobs/<id>` until the job is `done` or `failed`.
 5. Prints the report inside a `::group::registry report`, so what the sandbox
    refused -- `sandbox: refused: open /etc/shadow` and the like -- is in your
-   log.
+   log. Every line of it goes out behind a two-space gutter: the report is a
+   stranger's text and stdout is a channel Actions parses, so a `::` in it is
+   never at column 0 and can never be a workflow command.
 6. Fails the workflow when the registry refused the release.
 7. Otherwise reads `<index>/index/<package>.toml` and requires
    `version = "<the tag without its v>"` to be there. That is the only

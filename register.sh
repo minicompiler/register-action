@@ -257,9 +257,18 @@ while :; do
 done
 
 # ---- 5. the report, in the log ----
+#
+# Behind a two-space gutter, every line of it. The report is a stranger's text
+# -- the worker's, the compiler's and the sandbox's words about a repository
+# nobody audited -- and stdout here is a channel GitHub PARSES: a line that
+# starts with `::` at column 0 is a workflow command, so `::error::` would raise
+# an annotation nobody wrote, `::set-output` would set one of this action's own
+# outputs, and `::stop-commands::<token>` would turn the rest of the log into
+# data. Two spaces is all it takes, and it is this side's job whatever the
+# registry does with its own copy (the review of mc-registry's PR #6).
 
 group "registry report"
-cat "$BODY"
+sed 's/^/  /' "$BODY"
 endgroup
 
 package=$(grep -m1 '^package: ' "$BODY" | sed 's/^package: //')
