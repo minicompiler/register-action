@@ -1,0 +1,87 @@
+# action.yml -- ask the mc package registry to look at the tag this release
+# names, wait for the answer, and prove the version is in the index.
+#
+# It is a COMPOSITE action: shell steps and `curl`, no node, no Docker, no
+# third-party action. The whole of it is this file and `register.sh`, which is
+# about two hundred lines anyone can read before trusting it with a workflow.
+#
+# It carries no secret. `POST /poll` on the registry takes a repository URL and
+# nothing else: it queues one bounded validation job for a repository that is
+# ALREADY registered, and everything that job reads is public. Registering a
+# repository for the first time is a person's job, once, on the registry's /me
+# page.
+name: "Register a release with the mc registry"
+description: >-
+  Ask the mc package registry to validate the tag this release names, wait for
+  the job, and require the version to appear in the package index.
+author: "the minicompiler organization"
+
+branding:
+  icon: package
+  color: gray-dark
+
+inputs:
+  registry:
+    description: "The registry that answers POST /poll and GET /jobs/<id>."
+    required: false
+    default: "https://minicompiler.dev"
+  index:
+    description: "Where index/<package>.toml is published; the proof is read from here."
+    required: false
+    default: "https://pkg.minicompiler.dev"
+  repository:
+    description: "The repository to poll, as owner/repo."
+    required: false
+    default: ${{ github.repository }}
+  tag:
+    description: "The release's tag: v + a SemVer version, for example v1.2.0 or v1.2.0-rc.1."
+    required: false
+    default: ${{ github.event.release.tag_name }}
+  wait:
+    description: "Wait for the job to end. With false the action queues it and stops."
+    required: false
+    default: "true"
+  timeout:
+    description: "Seconds to wait for the job before giving up."
+    required: false
+    default: "900"
+  token:
+    description: >-
+      An mc registry account token. Reserved for S7 of the registry: NOT YET
+      HONOURED -- it is accepted, never sent, and changes nothing today.
+    required: false
+    default: ""
+
+outputs:
+  job:
+    description: "The job id the registry queued, empty when nothing was queued."
+    value: ${{ steps.register.outputs.job }}
+  state:
+    description: "done, failed, timeout, or queued when wait is false."
+    value: ${{ steps.register.outputs.state }}
+  report-url:
+    description: "The job's public report: <registry>/jobs/<id>."
+    value: ${{ steps.register.outputs.report-url }}
+
+runs:
+  using: composite
+  steps:
+    - id: register
+      shell: bash
+      run: "$GITHUB_ACTION_PATH/register.sh"
+      env:
+        # Every input reaches the script as an environment variable, so no
+        # value a person wrote is ever interpolated into a shell command line.
+        MCA_REGISTRY: ${{ inputs.registry }}
+        MCA_INDEX: ${{ inputs.index }}
+        MCA_REPOSITORY: ${{ inputs.repository }}
+        MCA_TAG: ${{ inputs.tag }}
+        MCA_WAIT: ${{ inputs.wait }}
+        MCA_TIMEOUT: ${{ inputs.timeout }}
+        MCA_TOKEN: ${{ inputs.token }}
+        # The event, read by GitHub and not by a JSON parser of ours: a draft
+        # release fires no `published` event, and this is how the action says so
+        # when somebody wires it to another trigger.
+        MCA_EVENT_NAME: ${{ github.event_name }}
+        MCA_EVENT_ACTION: ${{ github.event.action }}
+        MCA_RELEASE_DRAFT: ${{ github.event.release.draft }}
