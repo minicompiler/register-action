@@ -57,7 +57,7 @@ inputs:
       buys nothing beyond `poll` -- no register, no yank. Create one on
       <registry>/me > Tokens (shown once; `mcr_` + 43 characters; at most 50
       live per account; revoke it there), store it as a repository secret such
-      as MC_REGISTRY_TOKEN, and pass `token: ${{ secrets.MC_REGISTRY_TOKEN }}`.
+      as MC_REGISTRY_TOKEN, and pass it as the action's `token` input (token: secrets.MC_REGISTRY_TOKEN).
       Empty, the poll is anonymous, exactly as before.
     required: false
     default: ""
