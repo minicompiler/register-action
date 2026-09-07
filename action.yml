@@ -5,11 +5,14 @@
 # third-party action. The whole of it is this file and `register.sh`, which is
 # about two hundred lines anyone can read before trusting it with a workflow.
 #
-# It carries no secret. `POST /poll` on the registry takes a repository URL and
-# nothing else: it queues one bounded validation job for a repository that is
-# ALREADY registered, and everything that job reads is public. Registering a
-# repository for the first time is a person's job, once, on the registry's /me
-# page.
+# Without a `token` it carries no secret. `POST /poll` on the registry takes a
+# repository URL and nothing else: it queues one bounded validation job for a
+# repository that is ALREADY registered, and everything that job reads is
+# public. Registering a repository for the first time is a person's job, once,
+# on the registry's /me page. With a `token` -- an account token made on that
+# same page -- the poll runs as the account, which is what makes a `pending`
+# repository's next validation, or a poll of your own repository, yours to ask
+# for rather than the scheduler's.
 name: "Register a release with the mc registry"
 description: >-
   Ask the mc package registry to validate the tag this release names, wait for
@@ -47,8 +50,15 @@ inputs:
     default: "900"
   token:
     description: >-
-      An mc registry account token. Reserved for S7 of the registry: NOT YET
-      HONOURED -- it is accepted, never sent, and changes nothing today.
+      An mc registry account token, optional. With one, the poll runs AS the
+      account that made it (sent as `Authorization: Bearer`, on curl's stdin,
+      never on a command line or in the log): the account has to own the
+      repository, and the request is charged to the account's own budget. It
+      buys nothing beyond `poll` -- no register, no yank. Create one on
+      <registry>/me > Tokens (shown once; `mcr_` + 43 characters; at most 50
+      live per account; revoke it there), store it as a repository secret such
+      as MC_REGISTRY_TOKEN, and pass `token: ${{ secrets.MC_REGISTRY_TOKEN }}`.
+      Empty, the poll is anonymous, exactly as before.
     required: false
     default: ""
 

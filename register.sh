@@ -16,13 +16,20 @@
 #   7. and, when it did not, require the version to BE in the published index --
 #      the only assertion here that is about what a consumer will see.
 #
-# It carries no secret and needs no permission beyond the default `contents:
-# read`. Everything it sends is the repository's own public URL.
+# Without a `token` it carries no secret and needs no permission beyond the
+# default `contents: read`: everything it sends is the repository's own public
+# URL. With one -- an mc registry account token, `mcr_` + 43 characters, made on
+# the registry's /me page -- the poll runs AS that account (the registry's spec,
+# section 28): the token travels to `curl` on its standard input as a config
+# line, never on an argument vector, and this script never prints it.
 #
 # There is no `set -e`: every command whose failure means something is checked
 # where it runs, and a `curl` that fails in the middle of a poll loop is a
 # retry, not the end of the job.
 set -u
+# No tracing, ever: a `sh -x` of this file would print the token where it is
+# handed to curl. It is switched off before the token is read, not after.
+set +x
 
 REGISTRY=${MCA_REGISTRY:-https://minicompiler.dev}
 INDEX=${MCA_INDEX:-https://pkg.minicompiler.dev}
@@ -33,8 +40,7 @@ TIMEOUT=${MCA_TIMEOUT:-900}
 EVENT_NAME=${MCA_EVENT_NAME:-}
 EVENT_ACTION=${MCA_EVENT_ACTION:-}
 RELEASE_DRAFT=${MCA_RELEASE_DRAFT:-}
-# MCA_TOKEN is accepted by action.yml and deliberately not read here: account
-# tokens are S7 of the registry and nothing on the server would look at one.
+TOKEN=${MCA_TOKEN:-}
 
 # How long to wait before the first poll. It is a variable so the gate can set
 # it to 0; a workflow never does.
@@ -65,6 +71,28 @@ die() {
 
 STATE=error
 JOB=""
+
+# ---- 0. the token, when there is one ----
+#
+# Masked FIRST, before any line that could carry it: `::add-mask::` tells
+# Actions to redact the value from the whole log from here on, and it is only
+# printed where something parses it -- outside Actions (the gate) the line
+# would be a plain print of a secret, so it is not printed there at all.
+# Pasted secrets grow a trailing newline; that much is forgiven, nothing else.
+# The shape is the registry's own (`mcr_` + 43 characters of base64url, its
+# web/token.mc), and it is what makes the curl config line below safe: no byte
+# of that alphabet can close the quoted value or start an option. A token that
+# is not that shape is refused here WITHOUT being echoed -- the registry would
+# answer 401 to it anyway, and this way it never leaves the runner.
+if [ -n "$TOKEN" ]; then
+    TOKEN=$(printf '%s' "$TOKEN" | tr -d '\r\n')
+    if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+        printf '::add-mask::%s\n' "$TOKEN"
+    fi
+    if ! printf '%s' "$TOKEN" | grep -Eq '^mcr_[A-Za-z0-9_-]{43}$'; then
+        die "the token is not an mc registry token (mcr_ + 43 characters): create one on ${REGISTRY%/}/me > Tokens"
+    fi
+fi
 
 # ---- 1. the tag and the event ----
 
@@ -134,7 +162,11 @@ REGISTRY=${REGISTRY%/}
 INDEX=${INDEX%/}
 
 REPORT_URL=""
-notice "mc registry: $REGISTRY, repository $REPOSITORY, tag $TAG"
+if [ -n "$TOKEN" ]; then
+    notice "mc registry: $REGISTRY, repository $REPOSITORY, tag $TAG, as the token's account"
+else
+    notice "mc registry: $REGISTRY, repository $REPOSITORY, tag $TAG"
+fi
 
 # ---- 2. let the Release become visible ----
 # The `published` event arrives before the REST API answers about the release on
@@ -143,20 +175,36 @@ notice "mc registry: $REGISTRY, repository $REPOSITORY, tag $TAG"
 
 # ---- 3. POST /poll ----
 #
-# The body is the repository's URL and nothing else. `-f` makes curl exit
-# non-zero on a 4xx/5xx, and `-D -` gives us the headers we then read the status
-# and `Location` out of -- so one request answers both questions.
+# The body is the repository's URL and nothing else. `-D -` gives us the
+# headers we then read the status and `Location` out of, and `-w` the status
+# itself -- so one request answers both questions. The answer's body is kept
+# only for a 403, which is the one status with two readings (below).
+#
+# With a token, the request also carries `Authorization: Bearer <token>`, and
+# the header reaches curl as a CONFIG FILE on its standard input (`-K -`) -- one
+# `header = "..."` line -- which is how the registry itself hands curl every
+# credential it has: never on argv, where `ps` and a crash dump would show it.
+# Without one the command is byte for byte what it always was.
 started=$(date +%s)
 poll_once() {
-    curl -sS --proto "$REG_PROTO" --max-time 20 \
-         -o /dev/null -D "$HDRS" -w '%{http_code}' \
-         -X POST --data-urlencode "git_url=https://github.com/$REPOSITORY" \
-         "$REGISTRY/poll" 2> "$CURLERR"
+    if [ -n "$TOKEN" ]; then
+        printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" |
+        curl -sS --proto "$REG_PROTO" --max-time 20 -K - \
+             -o "$PBODY" -D "$HDRS" -w '%{http_code}' \
+             -X POST --data-urlencode "git_url=https://github.com/$REPOSITORY" \
+             "$REGISTRY/poll" 2> "$CURLERR"
+    else
+        curl -sS --proto "$REG_PROTO" --max-time 20 \
+             -o "$PBODY" -D "$HDRS" -w '%{http_code}' \
+             -X POST --data-urlencode "git_url=https://github.com/$REPOSITORY" \
+             "$REGISTRY/poll" 2> "$CURLERR"
+    fi
 }
 
 HDRS=$(mktemp)
 CURLERR=$(mktemp)
-trap 'rm -f "$HDRS" "$CURLERR"' EXIT
+PBODY=$(mktemp)
+trap 'rm -f "$HDRS" "$CURLERR" "$PBODY"' EXIT
 
 header_of() {
     # the LAST value of a header, folded to one line: a redirect would have
@@ -193,6 +241,23 @@ while :; do
         400)
             die "the registry refused the repository URL: only public GitHub repositories for now"
             ;;
+        401)
+            # Only a request that offered a credential can get this one: the
+            # anonymous poll has no account and is never asked for one.
+            [ -n "$TOKEN" ] || die "the registry answered $code to POST $REGISTRY/poll"
+            die "the token was refused (revoked, expired, or not a token): make a new one on $REGISTRY/me > Tokens and update the secret"
+            ;;
+        403)
+            # Two readings, told apart by the body: the account behind the
+            # token owns none of the repository's packages, or it has a
+            # registry document still to accept (the acceptance gate a session
+            # meets, asked on this road too) -- the registry says which.
+            [ -n "$TOKEN" ] || die "the registry answered $code to POST $REGISTRY/poll"
+            if grep -qi 'accept' "$PBODY"; then
+                die "the token's account has to accept the registry's documents first: $(head -1 "$PBODY") -- sign in on $REGISTRY/me"
+            fi
+            die "the token's account does not own this repository: the poll runs as the account that made the token, and $REPOSITORY is registered to another"
+            ;;
         *)
             die "the registry answered $code to POST $REGISTRY/poll"
             ;;
@@ -222,7 +287,7 @@ fi
 # ---- 4. read the job until it ends ----
 
 BODY=$(mktemp)
-trap 'rm -f "$HDRS" "$CURLERR" "$BODY"' EXIT
+trap 'rm -f "$HDRS" "$CURLERR" "$PBODY" "$BODY"' EXIT
 
 state=""
 while :; do
@@ -297,7 +362,7 @@ if [ -z "$package" ]; then
 fi
 
 idx=$(mktemp)
-trap 'rm -f "$HDRS" "$CURLERR" "$BODY" "$idx"' EXIT
+trap 'rm -f "$HDRS" "$CURLERR" "$PBODY" "$BODY" "$idx"' EXIT
 code=$(curl -sS --proto "$IDX_PROTO" --max-time 20 -o "$idx" -w '%{http_code}' \
             "$INDEX/index/$package.toml" 2> "$CURLERR")
 if [ "$code" != "200" ]; then

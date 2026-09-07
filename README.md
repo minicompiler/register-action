@@ -6,7 +6,9 @@ to look at the tag, waits for the answer, prints the registry's report into the
 job log, and fails the workflow if the release was refused or did not reach the
 index.
 
-It carries **no secret**. The whole request is your repository's public URL.
+It carries **no secret** unless you give it one. The whole request is your
+repository's public URL; with an optional account token the same poll runs as
+you (see [Per-account tokens](#per-account-tokens)).
 
 ## What it does
 
@@ -64,6 +66,42 @@ jobs:
 
 No checkout, no secret, no permission beyond the default `contents: read`.
 
+## Per-account tokens
+
+The anonymous poll above is enough for a registered repository: the registry
+validates the tag whoever asked. Two things it cannot do, because an anonymous
+request has no account: poll a repository whose registration is still
+`pending` (its first validation failed and the next release should be looked
+at), and run as *you* -- charged to your own budget, recorded as your request,
+rather than waiting for the scheduler.
+
+An **account token** does both. On <https://minicompiler.dev/me> > Tokens,
+make one: it is shown **once**, it is `mcr_` + 43 characters, and an account
+holds at most 50 live ones. Store it as a repository secret -- Settings >
+Secrets and variables > Actions, say `MC_REGISTRY_TOKEN` -- and pass it:
+
+```yaml
+      - uses: minicompiler/register-action@v1
+        with:
+          tag: ${{ inputs.tag || github.event.release.tag_name }}
+          token: ${{ secrets.MC_REGISTRY_TOKEN }}
+```
+
+What it changes: the poll carries `Authorization: Bearer <token>` and the
+registry answers for the account -- `401` if the token was revoked, has
+expired, or is not one (the action says `the token was refused`), `403` if the
+account does not own the repository (`the token's account does not own this
+repository`) or still has a registry document to accept. What it does **not**
+buy: a token's only scope is `poll`. It cannot register a repository, cannot
+yank a version, and cannot do anything a person does on `/me` -- so a leaked
+one is a nuisance, not a loss; revoke it on the same page.
+
+How the action handles it: the value is masked in the job log first thing
+(`::add-mask::`), checked for the registry's shape before anything else, and
+handed to `curl` as a config line on its **standard input** (`-K -`) -- never
+on a command line, where a process listing would show it, and never printed.
+Without the input the request is byte for byte the anonymous one.
+
 ## Inputs
 
 | input | default | meaning |
@@ -74,7 +112,7 @@ No checkout, no secret, no permission beyond the default `contents: read`.
 | `tag` | `${{ github.event.release.tag_name }}` | the release's tag |
 | `wait` | `true` | wait for the job; with `false` the action queues it and stops |
 | `timeout` | `900` | seconds to wait before giving up |
-| `token` | (none) | **S7 of the registry, not yet honoured**: accepted, never sent, and changes nothing today. It will enable first registration from CI when account tokens ship. |
+| `token` | (none) | an account token from `/me` > Tokens, passed from a secret; the poll runs as that account (see [Per-account tokens](#per-account-tokens)) |
 
 ## Outputs
 
@@ -103,7 +141,9 @@ SHA that `v1` currently names.
 * `register.sh` -- the whole of it, in POSIX `sh`.
 * `test/stub.py` -- a registry that plays the roads the action has to handle:
   `queued -> running -> done`, `failed`, `404`, `429` with `Retry-After`, a job
-  that never ends, and a job that ends without putting the version in the index.
+  that never ends, a job that ends without putting the version in the index,
+  and the token roads -- it records the `Authorization` header of every poll,
+  answers `401` to a token it never issued and `403` to another account's.
 * `test/run.sh` -- the gate: `make check` runs `shellcheck`, `sh -n` and the
   script against that stub, asserting the exit code and the message of each
   road.
@@ -115,7 +155,10 @@ section 19 of its spec (`minicompiler/mc-registry`, private) and served by
 <https://minicompiler.dev>. A poll is bounded -- three an hour per repository, sixty an hour per address,
 three hundred an hour in all -- it queues at most one job per repository at a
 time, it records `origin = 'ci'` with no account, and it can neither register a
-package nor yank a version.
+package nor yank a version. With an account token (section 28 of the spec) the
+same route records `origin = 'user'` and the account, polls only the packages
+of that repository the account owns, and charges the account's own budget
+(sixty an hour) before the three above.
 
 ## Licence
 
